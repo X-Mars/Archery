@@ -18,18 +18,20 @@
     <input type="hidden" id="sqlMaxRowNumber" value="{{ rows|length }}">
     <input type="hidden" id="editSqlContent" value="{{ workflow_detail.sqlworkflowcontent.sql_content }}"/>
     <hr>
+    <h4>
+        审批流
+    </h4>
+    <h5>
+    {% include "workflow_display.html" %}
+    <h4>
+        其他信息
+    </h4>
     <table data-toggle="table" class="table table-striped table-hover"
            style="table-layout:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
         <thead>
         <tr>
             <th>
                 发起人
-            </th>
-            <th>
-                审批流程
-            </th>
-            <th>
-                当前审批
             </th>
             <th>
                 目标实例
@@ -64,12 +66,6 @@
         <tr class="success">
             <td>
                 {{ workflow_detail.engineer_display }}
-            </td>
-            <td>
-                {{ audit_auth_group }}
-            </td>
-            <td>
-                {{ current_audit_auth_group }}
             </td>
             <td>
                 {{ workflow_detail.instance.instance_name }}
@@ -407,6 +403,15 @@
         });
     </script>
 
+    <script>
+        var editWorkflowNname = "{{ workflow_detail.workflow_name|escapejs }}";
+        var editDemandUrl = "{{ workflow_detail.demand_url|escapejs }}";
+        var editSqlContent = $("#editSqlContent").val();
+        var editGroup = "{{ workflow_detail.group_name|escapejs }}";
+        var editClustername = "{{ workflow_detail.instance.instance_name|escapejs }}";
+        var editDbname = "{{ workflow_detail.db_name|escapejs }}";
+        var editIsbackup = "{{ workflow_detail.is_backup|escapejs }}";
+    </script>
     <!--按钮控制 -->
     <script>
         // 表格展开折叠全部行
@@ -422,14 +427,6 @@
                 $(this).text('展开全部')
             }
         });
-
-        var editWorkflowNname = "{{ workflow_detail.workflow_name }}";
-        var editDemandUrl = "{{ workflow_detail.demand_url }}";
-        var editSqlContent = $("#editSqlContent").val();
-        var editGroup = "{{ workflow_detail.group_name }}";
-        var editClustername = "{{ workflow_detail.instance.instance_name }}";
-        var editDbname = "{{ workflow_detail.db_name }}";
-        var editIsbackup = "{{ workflow_detail.is_backup }}";
 
         $("#btnEditSql").click(function () {
             sessionStorage.setItem('editWorkflowNname', editWorkflowNname);

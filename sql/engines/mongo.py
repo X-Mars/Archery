@@ -3,7 +3,6 @@ import re, time
 import pymongo
 import logging
 import traceback
-import json
 import subprocess
 import simplejson as json
 import datetime
@@ -13,9 +12,11 @@ from bson import json_util
 from pymongo.errors import OperationFailure
 from dateutil.parser import parse
 from bson.objectid import ObjectId
+from bson.int64 import Int64
 
 from . import EngineBase
 from .models import ResultSet, ReviewSet, ReviewResult
+from common.config import SysConfig
 
 logger = logging.getLogger("default")
 
@@ -197,6 +198,7 @@ class JsonDecoder:
                     "newDate",
                     "ISODate",
                     "newISODate",
+                    "NumberLong",
                 ):  # ======类似的类型比较多还需单独处理，如int()等
                     data_type = outstr
                     for c in self.__remain_str():
@@ -230,6 +232,12 @@ class JsonDecoder:
                 date_content = date_regex.findall(outstr)
                 if len(date_content) > 0:
                     return parse(date_content[0], yearfirst=True)
+            elif data_type.replace(" ", "") in ("NumberLong",):
+                nuStr = re.findall(r"NumberLong\(.*?\)", outstr)  # 单独处理NumberLong
+                if len(nuStr) > 0:
+                    id_str = re.findall(r"\(.*?\)", nuStr[0])
+                    nlong = id_str[0].replace(" ", "")[2:-2]
+                    return Int64(nlong)
             elif outstr:
                 return outstr
             raise Exception('Invalid symbol "%s"' % outstr)
@@ -353,6 +361,7 @@ class MongoEngine(EngineBase):
                     _re_msg.append(_line)
 
                 msg = "\n".join(_re_msg)
+                msg = msg.replace("true\n", "")
             except Exception as e:
                 logger.warning(f"mongo语句执行报错，语句：{sql}，{e}错误信息{traceback.format_exc()}")
             finally:
@@ -500,7 +509,12 @@ class MongoEngine(EngineBase):
         count = 0
         check_result = ReviewSet(full_sql=sql)
 
+        # 获取real_row_count参数选项
+        real_row_count = SysConfig().get("real_row_count", False)
+
         sql = sql.strip()
+        # sql 检查过滤注释语句
+        sql = re.sub(r"^\s*//.*$", "", sql, flags=re.MULTILINE)
         if sql.find(";") < 0:
             raise Exception("提交的语句请以分号结尾")
         # 以；切分语句，逐句执行
@@ -672,55 +686,57 @@ class MongoEngine(EngineBase):
                                     sql=check_sql,
                                     execute_time=0,
                                 )
-                            if methodStr == "insertOne":
-                                count = 1
-                            elif methodStr in ("insert", "insertMany"):
-                                insert_str = re.search(
-                                    rf"{methodStr}\((.*)\)", sql_str, re.S
-                                ).group(1)
-                                first_char = insert_str.replace(" ", "").replace(
-                                    "\n", ""
-                                )[0]
-                                if first_char == "{":
+                            if real_row_count:
+                                if methodStr == "insertOne":
                                     count = 1
-                                elif first_char == "[":
-                                    insert_values = re.search(
-                                        r"\[(.*?)\]", insert_str, re.S
-                                    ).group(0)
-                                    de = JsonDecoder()
-                                    insert_values = de.decode(insert_values)
-                                    count = len(insert_values)
-                                else:
-                                    count = 0
-                            elif methodStr in (
-                                "update",
-                                "updateOne",
-                                "updateMany",
-                                "deleteOne",
-                                "deleteMany",
-                                "remove",
-                            ):
-                                if sql_str.find("find(") > 0:
-                                    count_sql = sql_str.replace(methodStr, "count")
-                                else:
-                                    count_sql = (
-                                        sql_str.replace(methodStr, "find") + ".count()"
+                                elif methodStr in ("insert", "insertMany"):
+                                    insert_str = re.search(
+                                        rf"{methodStr}\((.*)\)", sql_str, re.S
+                                    ).group(1)
+                                    first_char = insert_str.replace(" ", "").replace(
+                                        "\n", ""
+                                    )[0]
+                                    if first_char == "{":
+                                        count = 1
+                                    elif first_char == "[":
+                                        insert_values = re.search(
+                                            r"\[(.*?)\]", insert_str, re.S
+                                        ).group(0)
+                                        de = JsonDecoder()
+                                        insert_values = de.decode(insert_values)
+                                        count = len(insert_values)
+                                    else:
+                                        count = 0
+                                elif methodStr in (
+                                    "update",
+                                    "updateOne",
+                                    "updateMany",
+                                    "deleteOne",
+                                    "deleteMany",
+                                    "remove",
+                                ):
+                                    if sql_str.find("find(") > 0:
+                                        count_sql = sql_str.replace(methodStr, "count")
+                                    else:
+                                        count_sql = (
+                                            sql_str.replace(methodStr, "find")
+                                            + ".count()"
+                                        )
+                                    query_dict = self.parse_query_sentence(count_sql)
+                                    count_sql = f"""db.getCollection("{query_dict["collection"]}").find({query_dict["condition"]}).count()"""
+                                    query_result = self.query(db_name, count_sql)
+                                    count = json.loads(query_result.rows[0][0]).get(
+                                        "count", 0
                                     )
-                                query_dict = self.parse_query_sentence(count_sql)
-                                count_sql = f"""db.getCollection("{query_dict["collection"]}").find({query_dict["condition"]}).count()"""
-                                query_result = self.query(db_name, count_sql)
-                                count = json.loads(query_result.rows[0][0]).get(
-                                    "count", 0
-                                )
-                                if (
-                                    methodStr == "update"
-                                    and "multi:true"
-                                    not in sql_str.replace(" ", "")
-                                    .replace('"', "")
-                                    .replace("'", "")
-                                    .replace("\n", "")
-                                ) or methodStr in ("deleteOne", "updateOne"):
-                                    count = 1 if count > 0 else 0
+                                    if (
+                                        methodStr == "update"
+                                        and "multi:true"
+                                        not in sql_str.replace(" ", "")
+                                        .replace('"', "")
+                                        .replace("'", "")
+                                        .replace("\n", "")
+                                    ) or methodStr in ("deleteOne", "updateOne"):
+                                        count = 1 if count > 0 else 0
                             if methodStr in (
                                 "insertOne",
                                 "insert",
@@ -749,7 +765,6 @@ class MongoEngine(EngineBase):
                                 errormessage="仅支持DML和DDL语句，如需查询请使用数据库查询功能！",
                                 sql=check_sql,
                             )
-
                 else:
                     check_result.error = "语法错误"
                     result = ReviewResult(
@@ -792,13 +807,9 @@ class MongoEngine(EngineBase):
             self.conn.close()
             self.conn = None
 
-    @property
-    def name(self):  # pragma: no cover
-        return "Mongo"
+    name = "Mongo"
 
-    @property
-    def info(self):  # pragma: no cover
-        return "Mongo engine"
+    info = "Mongo engine"
 
     def get_roles(self):
         sql_get_roles = "db.system.roles.find({},{_id:1})"
@@ -1258,18 +1269,20 @@ class MongoEngine(EngineBase):
         result = ResultSet()
         try:
             conn = self.get_connection()
-            db = conn.admin
-            for opid in opids:
-                conn.admin.command({"killOp": 1, "op": opid})
         except Exception as e:
-            try:
-                sql = {"killOp": 1, "op": _opid}
-            except:
-                sql = {"killOp": 1, "op": ""}
-            logger.warning(
-                f"mongodb语句执行killOp报错，语句：db.runCommand({sql}) ，错误信息{traceback.format_exc()}"
-            )
+            logger.error(f"{self.name} 连接失败, error: {str(e)}")
             result.error = str(e)
+            return result
+        for opid in opids:
+            try:
+                conn.admin.command({"killOp": 1, "op": opid})
+            except Exception as e:
+                sql = {"killOp": 1, "op": opid}
+                logger.warning(
+                    f"{self.name}语句执行killOp报错，语句：db.runCommand({sql}) ，错误信息{traceback.format_exc()}"
+                )
+                result.error = str(e)
+        return result
 
     def get_all_databases_summary(self):
         """实例数据库管理功能，获取实例所有的数据库描述信息"""

@@ -35,18 +35,15 @@ class PgSQLEngine(EngineBase):
             port=self.port,
             user=self.user,
             password=self.password,
+            client_encoding=self.instance.charset,
             dbname=db_name,
             connect_timeout=10,
         )
         return self.conn
 
-    @property
-    def name(self):
-        return "PgSQL"
+    name = "PgSQL"
 
-    @property
-    def info(self):
-        return "PgSQL engine"
+    info = "PgSQL engine"
 
     def get_all_databases(self):
         """

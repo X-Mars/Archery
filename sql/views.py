@@ -1,7 +1,6 @@
 # -*- coding: UTF-8 -*-
 import os
 import traceback
-from django.conf import settings
 
 from django.contrib.auth.decorators import permission_required
 from django.contrib.auth.models import Group
@@ -10,9 +9,9 @@ from django.shortcuts import render, get_object_or_404
 from django.http import HttpResponseRedirect, FileResponse, Http404
 from django.urls import reverse
 
-from archery import settings
+from django.conf import settings
 from common.config import SysConfig
-from sql.engines import get_engine
+from sql.engines import get_engine, engine_map
 from common.utils.permission import superuser_required
 from common.utils.convert import Convert
 from sql.utils.tasks import task_info
@@ -32,7 +31,7 @@ from .models import (
     AuditEntry,
     TwoFactorAuthConfig,
 )
-from sql.utils.workflow_audit import Audit
+from sql.utils.workflow_audit import Audit, AuditV2, AuditException
 from sql.utils.sql_review import (
     can_execute,
     can_timingtask,
@@ -40,8 +39,8 @@ from sql.utils.sql_review import (
     can_view,
     can_rollback,
 )
-from common.utils.const import Const, WorkflowDict
-from sql.utils.resource_group import user_groups, user_instances, auth_group_users
+from common.utils.const import Const, WorkflowType, WorkflowAction
+from sql.utils.resource_group import user_groups, user_instances
 
 import logging
 
@@ -65,6 +64,8 @@ def login(request):
             "sign_up_enabled": SysConfig().get("sign_up_enabled"),
             "oidc_enabled": settings.ENABLE_OIDC,
             "dingding_enabled": settings.ENABLE_DINGDING,
+            "cas_enabled": settings.ENABLE_CAS,
+            "oidc_btn_name": SysConfig().get("oidc_btn_name", "以OIDC登录"),
         },
     )
 
@@ -175,6 +176,7 @@ def submit_sql(request):
     context = {
         "group_list": group_list,
         "enable_backup_switch": archer_config.get("enable_backup_switch"),
+        "engines": engine_map,
     }
     return render(request, "sqlsubmit.html", context)
 
@@ -182,13 +184,12 @@ def submit_sql(request):
 def detail(request, workflow_id):
     """展示SQL工单详细页面"""
     workflow_detail = get_object_or_404(SqlWorkflow, pk=workflow_id)
+    audit_handler = AuditV2(workflow=workflow_detail)
     if not can_view(request.user, workflow_id):
         raise PermissionDenied
+    review_info = audit_handler.get_review_info()
     # 自动审批不通过的不需要获取下列信息
     if workflow_detail.status != "workflow_autoreviewwrong":
-        # 获取当前审批和审批流程
-        audit_auth_group, current_audit_auth_group = Audit.review_info(workflow_id, 2)
-
         # 是否可审核
         is_can_review = Audit.can_review(request.user, workflow_id, 2)
         # 是否可执行 TODO 这几个判断方法入参都修改为workflow对象，可减少多次数据库交互
@@ -204,28 +205,16 @@ def detail(request, workflow_id):
         try:
             audit_detail = Audit.detail_by_workflow_id(
                 workflow_id=workflow_id,
-                workflow_type=WorkflowDict.workflow_type["sqlreview"],
+                workflow_type=WorkflowType.SQL_REVIEW,
             )
             audit_id = audit_detail.audit_id
             last_operation_info = (
                 Audit.logs(audit_id=audit_id).latest("id").operation_info
             )
-            # 等待审批的展示当前全部审批人
-            if workflow_detail.status == "workflow_manreviewing":
-                auth_group_name = Group.objects.get(id=audit_detail.current_audit).name
-                current_audit_users = auth_group_users(
-                    [auth_group_name], audit_detail.group_id
-                )
-                current_audit_users_display = [
-                    user.display for user in current_audit_users
-                ]
-                last_operation_info += "，当前审批人：" + ",".join(current_audit_users_display)
         except Exception as e:
             logger.debug(f"无审核日志记录，错误信息{e}")
             last_operation_info = ""
     else:
-        audit_auth_group = "系统自动驳回"
-        current_audit_auth_group = "系统自动驳回"
         is_can_review = False
         is_can_execute = False
         is_can_timingtask = False
@@ -255,9 +244,8 @@ def detail(request, workflow_id):
         "is_can_timingtask": is_can_timingtask,
         "is_can_cancel": is_can_cancel,
         "is_can_rollback": is_can_rollback,
-        "audit_auth_group": audit_auth_group,
+        "review_info": review_info,
         "manual": manual,
-        "current_audit_auth_group": current_audit_auth_group,
         "run_date": run_date,
     }
     return render(request, "detail.html", context)
@@ -328,7 +316,9 @@ def sqlquery(request):
     )
     can_download = 1 if user.has_perm("sql.query_download") or user.is_superuser else 0
     return render(
-        request, "sqlquery.html", {"favorites": favorites, "can_download": can_download}
+        request,
+        "sqlquery.html",
+        {"favorites": favorites, "can_download": can_download, "engines": engine_map},
     )
 
 
@@ -339,7 +329,7 @@ def queryapplylist(request):
     # 获取资源组
     group_list = user_groups(user)
 
-    context = {"group_list": group_list}
+    context = {"group_list": group_list, "engines": engine_map}
     return render(request, "queryapplylist.html", context)
 
 
@@ -347,7 +337,8 @@ def queryapplydetail(request, apply_id):
     """查询权限申请详情页面"""
     workflow_detail = QueryPrivilegesApply.objects.get(apply_id=apply_id)
     # 获取当前审批和审批流程
-    audit_auth_group, current_audit_auth_group = Audit.review_info(apply_id, 1)
+    audit_handler = AuditV2(workflow=workflow_detail)
+    review_info = audit_handler.get_review_info()
 
     # 是否可审核
     is_can_review = Audit.can_review(request.user, apply_id, 1)
@@ -368,9 +359,8 @@ def queryapplydetail(request, apply_id):
 
     context = {
         "workflow_detail": workflow_detail,
-        "audit_auth_group": audit_auth_group,
+        "review_info": review_info,
         "last_operation_info": last_operation_info,
-        "current_audit_auth_group": current_audit_auth_group,
         "is_can_review": is_can_review,
     }
     return render(request, "queryapplydetail.html", context)
@@ -403,7 +393,7 @@ def instance(request):
     """实例管理页面"""
     # 获取实例标签
     tags = InstanceTag.objects.filter(active=True)
-    return render(request, "instance.html", {"tags": tags})
+    return render(request, "instance.html", {"tags": tags, "engines": engine_map})
 
 
 @permission_required("sql.menu_instance_account", raise_exception=True)
@@ -468,13 +458,15 @@ def archive_detail(request, id):
     """归档详情页面"""
     archive_config = ArchiveConfig.objects.get(pk=id)
     # 获取当前审批和审批流程、是否可审核
+    audit_handler = AuditV2(
+        workflow=archive_config, resource_group=archive_config.resource_group
+    )
+    review_info = audit_handler.get_review_info()
     try:
-        audit_auth_group, current_audit_auth_group = Audit.review_info(id, 3)
-        is_can_review = Audit.can_review(request.user, id, 3)
-    except Exception as e:
-        logger.debug(f"归档配置{id}无审核信息，{e}")
-        audit_auth_group, current_audit_auth_group = None, None
-        is_can_review = False
+        audit_handler.can_operate(WorkflowAction.PASS, request.user)
+        can_review = True
+    except AuditException:
+        can_review = False
     # 获取审核日志
     if archive_config.status == 2:
         try:
@@ -492,10 +484,9 @@ def archive_detail(request, id):
 
     context = {
         "archive_config": archive_config,
-        "audit_auth_group": audit_auth_group,
+        "review_info": review_info,
         "last_operation_info": last_operation_info,
-        "current_audit_auth_group": current_audit_auth_group,
-        "is_can_review": is_can_review,
+        "can_review": can_review,
     }
     return render(request, "archivedetail.html", context)
 
@@ -510,7 +501,7 @@ def config(request):
     # 获取所有实例标签
     instance_tags = InstanceTag.objects.all()
     # 支持自动审核的数据库类型
-    db_type = ["mysql", "oracle", "mongo", "clickhouse"]
+    db_type = ["mysql", "oracle", "mongo", "clickhouse", "redis"]
     # 获取所有配置项
     all_config = Config.objects.all().values("item", "value")
     sys_config = {}
@@ -523,7 +514,7 @@ def config(request):
         "instance_tags": instance_tags,
         "db_type": db_type,
         "config": sys_config,
-        "WorkflowDict": WorkflowDict,
+        "workflow_choices": WorkflowType,
     }
     return render(request, "config.html", context)
 
@@ -552,15 +543,15 @@ def workflowsdetail(request, audit_id):
     audit_detail = Audit.detail(audit_id)
     if not audit_detail:
         raise Http404("不存在对应的工单记录")
-    if audit_detail.workflow_type == WorkflowDict.workflow_type["query"]:
+    if audit_detail.workflow_type == WorkflowType.QUERY:
         return HttpResponseRedirect(
             reverse("sql:queryapplydetail", args=(audit_detail.workflow_id,))
         )
-    elif audit_detail.workflow_type == WorkflowDict.workflow_type["sqlreview"]:
+    elif audit_detail.workflow_type == WorkflowType.SQL_REVIEW:
         return HttpResponseRedirect(
             reverse("sql:detail", args=(audit_detail.workflow_id,))
         )
-    elif audit_detail.workflow_type == WorkflowDict.workflow_type["archive"]:
+    elif audit_detail.workflow_type == WorkflowType.ARCHIVE:
         return HttpResponseRedirect(
             reverse("sql:archive_detail", args=(audit_detail.workflow_id,))
         )
