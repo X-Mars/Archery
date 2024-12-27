@@ -52,6 +52,9 @@ env = environ.Env(
             "phoenix",
             "odps",
             "cassandra",
+            "doris",
+            "elasticsearch",
+            "opensearch",
         ],
     ),
     ENABLED_NOTIFIERS=(
@@ -99,6 +102,9 @@ AVAILABLE_ENGINES = {
     "mongo": {"path": "sql.engines.mongo:MongoEngine"},
     "phoenix": {"path": "sql.engines.phoenix:PhoenixEngine"},
     "odps": {"path": "sql.engines.odps:ODPSEngine"},
+    "doris": {"path": "sql.engines.doris:DorisEngine"},
+    "elasticsearch": {"path": "sql.engines.elasticsearch:ElasticsearchEngine"},
+    "opensearch": {"path": "sql.engines.elasticsearch:OpenSearchEngine"},
 }
 
 ENABLED_NOTIFIERS = env("ENABLED_NOTIFIERS")
@@ -483,6 +489,9 @@ LOGGING = {
         # },
     },
 }
+
+# 在网站标题及登录页面追加此内容, 可用于多archery实例的区分。Archery后台也有相同配置，如都做了配置，以后台配置为准
+CUSTOM_TITLE_SUFFIX = env("CUSTOM_TITLE_SUFFIX", default="")
 
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 if not os.path.exists(MEDIA_ROOT):

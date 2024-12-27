@@ -294,7 +294,9 @@ class ExecuteCheckSerializer(serializers.Serializer):
         try:
             Instance.objects.get(pk=instance_id)
         except Instance.DoesNotExist:
-            raise serializers.ValidationError({"errors": f"不存在该实例：{instance_id}"})
+            raise serializers.ValidationError(
+                {"errors": f"不存在该实例：{instance_id}"}
+            )
         return instance_id
 
     def get_instance(self):
@@ -395,18 +397,8 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
         if not sys_config.get("enable_backup_switch") and check_engine.auto_backup:
             is_backup = True
 
-        # 按照系统配置确定是自动驳回还是放行
-        auto_review_wrong = sys_config.get(
-            "auto_review_wrong", ""
-        )  # 1表示出现警告就驳回，2和空表示出现错误才驳回
-        workflow_status = "workflow_manreviewing"
-        if check_result.warning_count > 0 and auto_review_wrong == "1":
-            workflow_status = "workflow_autoreviewwrong"
-        elif check_result.error_count > 0 and auto_review_wrong in ("", "1", "2"):
-            workflow_status = "workflow_autoreviewwrong"
-
         workflow_data.update(
-            status=workflow_status,
+            status="workflow_manreviewing",
             is_backup=is_backup,
             is_manual=0,
             syntax_type=check_result.syntax_type,
@@ -430,7 +422,9 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
             logger.error(f"提交工单报错，错误信息：{traceback.format_exc()}")
             raise serializers.ValidationError({"errors": str(e)})
         # 有时候提交后自动审批通过, 在这里改写一下 workflow 状态
-        if auditor.audit.current_status == WorkflowStatus.PASSED:
+        if auditor.audit.current_status == WorkflowStatus.REJECTED:
+            auditor.workflow.status = "workflow_autoreviewwrong"
+        elif auditor.audit.current_status == WorkflowStatus.PASSED:
             auditor.workflow.status = "workflow_review_pass"
         auditor.workflow.save()
         return workflow_content
@@ -453,7 +447,8 @@ class AuditWorkflowSerializer(serializers.Serializer):
     workflow_id = serializers.IntegerField(label="工单id")
     audit_remark = serializers.CharField(label="审批备注")
     workflow_type = serializers.ChoiceField(
-        choices=WorkflowType.choices, label="工单类型：1-查询权限申请，2-SQL上线申请，3-数据归档申请"
+        choices=WorkflowType.choices,
+        label="工单类型：1-查询权限申请，2-SQL上线申请，3-数据归档申请",
     )
     audit_type = serializers.ChoiceField(choices=["pass", "cancel"], label="审核类型")
 
@@ -504,7 +499,8 @@ class WorkflowAuditListSerializer(serializers.ModelSerializer):
 class WorkflowLogSerializer(serializers.Serializer):
     workflow_id = serializers.IntegerField(label="工单id")
     workflow_type = serializers.ChoiceField(
-        choices=[1, 2, 3], label="工单类型：1-查询权限申请，2-SQL上线申请，3-数据归档申请"
+        choices=[1, 2, 3],
+        label="工单类型：1-查询权限申请，2-SQL上线申请，3-数据归档申请",
     )
 
     def validate(self, attrs):
@@ -539,7 +535,9 @@ class ExecuteWorkflowSerializer(serializers.Serializer):
         choices=[2, 3], label="工单类型：1-查询权限申请，2-SQL上线申请，3-数据归档申请"
     )
     mode = serializers.ChoiceField(
-        choices=["auto", "manual"], label="执行模式：auto-线上执行，manual-已手动执行", required=False
+        choices=["auto", "manual"],
+        label="执行模式：auto-线上执行，manual-已手动执行",
+        required=False,
     )
 
     def validate(self, attrs):
@@ -558,7 +556,9 @@ class ExecuteWorkflowSerializer(serializers.Serializer):
             try:
                 Users.objects.get(username=engineer)
             except Users.DoesNotExist:
-                raise serializers.ValidationError({"errors": f"不存在该用户：{engineer}"})
+                raise serializers.ValidationError(
+                    {"errors": f"不存在该用户：{engineer}"}
+                )
 
         try:
             WorkflowAudit.objects.get(

@@ -44,347 +44,6 @@ User = Users
 __author__ = "hhyo"
 
 
-class TestSQLUtils(TestCase):
-    def test_get_syntax_type(self):
-        """
-        测试语法判断
-        :return:
-        """
-        dml_sql = "select * from users;"
-        ddl_sql = "alter table users add id not null default 0 comment 'id' "
-        self.assertEqual(get_syntax_type(dml_sql), "DML")
-        self.assertEqual(get_syntax_type(ddl_sql), "DDL")
-
-    def test_get_syntax_type_by_re(self):
-        """
-        测试语法判断，不使用sqlparse解析,直接正则匹配判断
-        :return:
-        """
-        dml_sql = "select * from users;"
-        ddl_sql = "alter table users add id int not null default 0 comment 'id' "
-        other_sql = "show engine innodb status"
-        self.assertEqual(get_syntax_type(dml_sql, parser=False, db_type="mysql"), "DML")
-        self.assertEqual(get_syntax_type(ddl_sql, parser=False, db_type="mysql"), "DDL")
-        self.assertIsNone(get_syntax_type(other_sql, parser=False, db_type="mysql"))
-
-    def test_remove_comments(self):
-        """
-        测试去除SQL注释
-        :return:
-        """
-        sql1 = """   # This comment continues to the end of line
-        SELECT 1+1;     # This comment continues to the end of line"""
-        sql2 = """-- This comment continues to the end of line
-        SELECT 1+1;     -- This comment continues to the end of line"""
-        sql3 = """/* this is an in-line comment */
-        SELECT 1 /* this is an in-line comment */ + 1;/* this is an in-line comment */"""
-        self.assertEqual(
-            remove_comments(sql1, db_type="mysql"),
-            "SELECT 1+1;     # This comment continues to the end of line",
-        )
-        self.assertEqual(
-            remove_comments(sql2, db_type="mysql"),
-            "SELECT 1+1;     -- This comment continues to the end of line",
-        )
-        self.assertEqual(remove_comments(sql3, db_type="mysql"), "SELECT 1  + 1;")
-
-    def test_extract_tables_by_sql_parse(self):
-        """
-        测试表解析
-        :return:
-        """
-        sql = "select * from user.users a join logs.log b on a.id=b.id;"
-        self.assertEqual(
-            extract_tables(sql),
-            [{"name": "users", "schema": "user"}, {"name": "log", "schema": "logs"}],
-        )
-
-    def test_generate_sql_from_sql(self):
-        """
-        测试从SQl文本中解析SQL
-        :return:
-        """
-        text = "select * from sql_user;select * from sql_workflow;"
-        rows = generate_sql(text)
-        self.assertListEqual(
-            rows,
-            [
-                {"sql_id": 1, "sql": "select * from sql_user;"},
-                {"sql_id": 2, "sql": "select * from sql_workflow;"},
-            ],
-        )
-
-    def test_generate_sql_from_xml(self):
-        """
-        测试从XML文本中解析SQL
-        :return:
-        """
-        text = """<?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-            <mapper namespace="Test">
-            <select id="testParameters">
-            SELECT
-            name,
-            category,
-            price
-            FROM
-            fruits
-            WHERE
-            category = #{category}
-            AND price > ${price}
-            </select>
-        </mapper>
-        """
-        rows = generate_sql(text)
-        self.assertEqual(
-            rows,
-            [
-                {
-                    "sql_id": "testParameters",
-                    "sql": "\nSELECT name,\n       category,\n       price\nFROM fruits\nWHERE category = ?\n  AND price > ?",
-                }
-            ],
-        )
-
-    def test_get_full_sqlitem_list_anonymous_plsql(self):
-        """
-        测试SQL文本中plsql可执行块（匿名块）自动分割
-        :return:
-        """
-        text = """
-declare
-    v_rowcount integer;
-begin
-    select count(1) into v_rowcount  from user_tables
-      where table_name = upper('test2'); --账户特定关系人信息历史表
-    if v_rowcount = 0 then
-        execute IMMEDIATE '
-        create table test2
-        (
-        vc_bfcyid           int,           --受益人信息唯一标志ID
-        vc_specperid        VARCHAR2(100)  --特定关系人信息唯一标志ID
-        )
-        ';
-        execute IMMEDIATE '
-        CREATE index Idx_test2_1 ON test2(VC_BFCYID)
-        ';
-    end if;
-end;
-/
-
-BEGIN
-    insert into test2 values(1,'qq1');
-    commit;
-END;
-/
-"""
-        lists = get_full_sqlitem_list(text, "db")
-        rows = [
-            SqlItem(
-                id=0,
-                statement="""declare
-    v_rowcount integer;
-begin
-    select count(1) into v_rowcount  from user_tables
-      where table_name = upper('test2'); --账户特定关系人信息历史表
-    if v_rowcount = 0 then
-        execute IMMEDIATE '
-        create table test2
-        (
-        vc_bfcyid           int,           --受益人信息唯一标志ID
-        vc_specperid        VARCHAR2(100)  --特定关系人信息唯一标志ID
-        )
-        ';
-        execute IMMEDIATE '
-        CREATE index Idx_test2_1 ON test2(VC_BFCYID)
-        ';
-    end if;
-end;""",
-                stmt_type="PLSQL",
-                object_owner="db",
-                object_type="ANONYMOUS",
-                object_name="ANONYMOUS",
-            ),
-            SqlItem(
-                id=0,
-                statement="""BEGIN
-    insert into test2 values(1,'qq1');
-    commit;
-END;""",
-                stmt_type="PLSQL",
-                object_owner="db",
-                object_type="ANONYMOUS",
-                object_name="ANONYMOUS",
-            ),
-        ]
-        self.assertIsInstance(lists[0], SqlItem)
-        self.assertIsInstance(lists[1], SqlItem)
-        self.assertEqual(lists[0].__dict__, rows[0].__dict__)
-        self.assertEqual(lists[1].__dict__, rows[1].__dict__)
-
-    def test_get_full_sqlitem_list_plsql(self):
-        """
-        测试SQL文本中plsql对象定义语句（存储过程、函数等）自动分割
-        :return:
-        """
-        text = """
-create or replace procedure INSERTUSER
-(id IN NUMBER,
-name IN VARCHAR2)
-is
-begin
-    insert into user1 values(id,name);
-end;
-/
-
-create or replace function annual_income(name1 varchar2)
-return number is
-annual_salary number(7,2);
-begin
-    select sal*12+nvl(comm,0) into annual_salary from emp where lower(ename)=lower(name1);
-return annual_salary;
-end;
-/
-"""
-        lists = get_full_sqlitem_list(text, "db")
-        rows = [
-            SqlItem(
-                id=0,
-                statement="""create or replace procedure INSERTUSER
-(id IN NUMBER,
-name IN VARCHAR2)
-is
-begin
-    insert into user1 values(id,name);
-end;""",
-                stmt_type="PLSQL",
-                object_owner="db",
-                object_type="PROCEDURE",
-                object_name="INSERTUSER",
-            ),
-            SqlItem(
-                id=0,
-                statement="""create or replace function annual_income(name1 varchar2)
-return number is
-annual_salary number(7,2);
-begin
-    select sal*12+nvl(comm,0) into annual_salary from emp where lower(ename)=lower(name1);
-return annual_salary;
-end;""",
-                stmt_type="PLSQL",
-                object_owner="db",
-                object_type="FUNCTION",
-                object_name="ANNUAL_INCOME",
-            ),
-        ]
-        self.assertIsInstance(lists[0], SqlItem)
-        self.assertIsInstance(lists[1], SqlItem)
-        self.assertEqual(lists[0].__dict__, rows[0].__dict__)
-        self.assertEqual(lists[1].__dict__, rows[1].__dict__)
-
-    def test_get_full_sqlitem_list_sql_after_plsql(self):
-        """
-        测试SQL文本中plsql后面普通SQL语句以;自动分割
-        :return:
-        """
-        text = """
-create or replace procedure INSERTUSER
-(id IN NUMBER,
-name IN VARCHAR2)
-is
-begin
-    insert into user1 values(id,name);
-end;
-/
-update user_account set created=sysdate where account_no=1; 
-create table user(
-    id int,
-    uname varchar(100),
-    age int
-);
-"""
-        sql1 = "update user_account set created=sysdate where account_no=1;"
-        sql2 = """create table user(
-    id int,
-    uname varchar(100),
-    age int
-);"""
-        lists = get_full_sqlitem_list(text, "db")
-        rows = [
-            SqlItem(
-                id=0,
-                statement=sqlparse.format(
-                    sql1, strip_comments=True, reindent=True, keyword_case="lower"
-                ),
-                stmt_type="SQL",
-                object_owner="",
-                object_type="",
-                object_name="",
-            ),
-            SqlItem(
-                id=0,
-                statement=sqlparse.format(
-                    sql2, strip_comments=True, reindent=True, keyword_case="lower"
-                ),
-                stmt_type="SQL",
-                object_owner="",
-                object_type="",
-                object_name="",
-            ),
-        ]
-        self.assertIsInstance(lists[1], SqlItem)
-        self.assertIsInstance(lists[2], SqlItem)
-        self.assertEqual(lists[1].__dict__, rows[0].__dict__)
-        self.assertEqual(lists[2].__dict__, rows[1].__dict__)
-
-    def test_get_full_sqlitem_list_sql(self):
-        """
-        测试普通SQL（不包含plsql执行块和plsql对象定义块）文本，以;符号进行SQL语句分割
-        :return:
-        """
-        text = """
-update user_account set created=sysdate where account_no=1; 
-create table user(
-    id int,
-    uname varchar(100),
-    age int
-);
-"""
-        sql1 = "update user_account set created=sysdate where account_no=1;"
-        sql2 = """create table user(
-    id int,
-    uname varchar(100),
-    age int
-);"""
-        lists = get_full_sqlitem_list(text, "db")
-        rows = [
-            SqlItem(
-                id=0,
-                statement=sqlparse.format(
-                    sql1, strip_comments=True, reindent=True, keyword_case="lower"
-                ),
-                stmt_type="SQL",
-                object_owner="",
-                object_type="",
-                object_name="",
-            ),
-            SqlItem(
-                id=0,
-                statement=sqlparse.format(
-                    sql2, strip_comments=True, reindent=True, keyword_case="lower"
-                ),
-                stmt_type="SQL",
-                object_owner="",
-                object_type="",
-                object_name="",
-            ),
-        ]
-        self.assertIsInstance(lists[0], SqlItem)
-        self.assertIsInstance(lists[1], SqlItem)
-        self.assertEqual(lists[0].__dict__, rows[0].__dict__)
-        self.assertEqual(lists[1].__dict__, rows[1].__dict__)
-
-
 class TestSQLReview(TestCase):
     """
     测试sql review内的方法
@@ -897,6 +556,7 @@ class TestDataMasking(TestCase):
             db_name="db_name",
             syntax_type=1,
         )
+        # 单元测试创建脱敏规则
         DataMaskingRules.objects.create(
             rule_type=1, rule_regex="(.{3})(.*)(.{4})", hide_group=2
         )
@@ -907,6 +567,15 @@ class TestDataMasking(TestCase):
             table_schema="archer_test",
             table_name="users",
             column_name="phone",
+        )
+        # rule_type=100的规则不需要加，会自动创建。只需要加脱敏字段
+        DataMaskingColumns.objects.create(
+            rule_type=100,
+            active=True,
+            instance=self.ins,
+            table_schema="*",
+            table_name="*",
+            column_name="mobile",
         )
 
     def tearDown(self):
@@ -939,6 +608,7 @@ class TestDataMasking(TestCase):
 
     @patch("sql.utils.data_masking.GoInceptionEngine")
     def test_data_masking_hit_rules_not_exists_star(self, _inception):
+        """数据库返回时添加了null结果。"""
         _inception.return_value.query_data_masking.return_value = [
             {
                 "index": 0,
@@ -950,13 +620,16 @@ class TestDataMasking(TestCase):
             }
         ]
         sql = """select phone from users;"""
-        rows = (("18888888888",), ("18888888889",), ("18888888810",))
+        rows = (("18888888888",), (None,), ("18888888889",), ("18888888810",))
         query_result = ReviewSet(column_list=["phone"], rows=rows, full_sql=sql)
         r = data_masking(self.ins, "archery", sql, query_result)
         print("test_data_masking_hit_rules_not_exists_star:", r.rows)
         mask_result_rows = [
             [
                 "188****8888",
+            ],
+            [
+                None,
             ],
             [
                 "188****8889",
@@ -1094,6 +767,79 @@ class TestDataMasking(TestCase):
                 "188****8889",
             ],
         ]
+        self.assertEqual(r.rows, mask_result_rows)
+
+    @patch("sql.utils.data_masking.GoInceptionEngine")
+    def test_data_masking_hit_default_rules_column_and_star(self, _inception):
+        """命中默认脱敏规则(规则编码100)，查询的SQL存在*和字段的单元测试方法。
+        1. 脱敏规则：库名和表名为*，字段名为mobile。
+        2. 脱敏规则：库名:archer_test表名:users，字段名为phone。
+        """
+        _inception.return_value.query_data_masking.return_value = [
+            {
+                "index": 0,
+                "field": "phone",
+                "type": "varchar(80)",
+                "table": "users",
+                "schema": "archer_test",
+                "alias": "p",
+            },
+            {
+                "index": 1,
+                "field": "id",
+                "type": "varchar(80)",
+                "table": "users",
+                "schema": "archer_test",
+                "alias": "id",
+            },
+            {
+                "index": 2,
+                "field": "mobile",
+                "type": "varchar(80)",
+                "table": "users_not_config",
+                "schema": "archer_test_not_config",
+                "alias": "m",
+            },
+        ]
+        sql = """select phone,id,mobile,* from users;"""
+        rows = (
+            ("1", "7954597708277300617", "1"),
+            ("12", "7954597708277300618", "12"),
+            ("123", "7954597708277300621", "123"),
+            ("1234", "7954597708277300622", "1234"),
+            ("12345", "7954597708277300623", "12345"),
+            ("123456", "7955140019084306231", "123456"),
+            ("1234567", "7955140019084306241", "1234567"),
+            ("12345678", "7955140019084306242", "12345678"),
+            ("123456789", "7955140019084306243", "123456789"),
+            ("123456789a", "7955140019084306244", "123456789a"),
+            ("123456789ab", "7955140019084306245", "123456789ab"),
+            ("123456789abc", "7955140019084306246", "123456789abc"),
+            ("123456789abcd", "7955140019084306247", "123456789abcd"),
+            ("123456789abcde", "7955140019084306248", "123456789abcde"),
+        )
+        query_result = ReviewSet(
+            column_list=["phone", "id", "mobile"], rows=rows, full_sql=sql
+        )
+        r = data_masking(self.ins, "archery", sql, query_result)
+        # 第一列走的脱敏规则1，第二列Id不应该脱敏，第三列走的脱敏规则100。
+        mask_result_rows = [
+            ["1", "7954597708277300617", "*"],
+            ["12", "7954597708277300618", "*2"],
+            ["123", "7954597708277300621", "1*3"],
+            ["1234", "7954597708277300622", "1**4"],
+            ["12345", "7954597708277300623", "1**45"],
+            ["123456", "7955140019084306231", "12**56"],
+            ["1234567", "7955140019084306241", "12***67"],
+            ["123*5678", "7955140019084306242", "12***678"],
+            ["123**6789", "7955140019084306243", "123***789"],
+            ["123***789a", "7955140019084306244", "123****89a"],
+            ["123****89ab", "7955140019084306245", "123****89ab"],
+            ["123*****9abc", "7955140019084306246", "1234****9abc"],
+            ["123******abcd", "7955140019084306247", "1234*****abcd"],
+            ["123*******bcde", "7955140019084306248", "1234*****abcde"],
+        ]
+
         self.assertEqual(r.rows, mask_result_rows)
 
     @patch("sql.utils.data_masking.GoInceptionEngine")

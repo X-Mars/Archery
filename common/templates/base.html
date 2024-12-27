@@ -7,7 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="">
     <meta name="author" content="">
-    <title>Archery-SQL审核查询平台</title>
+    <title>{% block title %}Archery-SQL审核查询平台{{ custom_title_suffix }}{% endblock %}</title>
     <link rel="shortcut icon" href="{% static 'img/favicon.ico' %}"/>
 
     <!-- 引入 Bootstrap -->
@@ -39,7 +39,7 @@
                 <span class="icon-bar"></span>
                 <span class="icon-bar"></span>
             </button>
-            <a class="navbar-brand" href="/index/"><strong>Archery</strong></a>
+            <a class="navbar-brand" href="/index/"><strong>Archery{{ custom_title_suffix }}</strong></a>
         </div>
 
         <!-- /.navbar-header -->
@@ -383,6 +383,9 @@
     <div id="page-wrapper">
         <div class="clearfix">
             <br>
+            {% if announcement_content_enabled %}
+            <div class="alert alert-info h4"  role="alert">{{announcement_content}}</div>
+            {% endif %}
             {% block content %}
             {% endblock content %}
             <!--底部部分 -->
@@ -411,12 +414,12 @@
 <script src="{% static 'watermark/shuiyin.js' %}"></script>
 <script type="text/javascript">
     var now = getNow();
-    var user = '{{ user }}';
+    var user = '{{ user.display }}{{ user.date_joined|date:"Hdi" }}';
     var watermark_enabled = '{{ watermark_enabled }}';
     if(watermark_enabled == 'True'){
-        watermark.init({ watermark_txt: user + " " + now })
+        watermark.init({ watermark_txt: user + " " + now, watermark_alpha: 0.05})
         window.onscroll = function(){
-            watermark.load({ watermark_txt: user + " " + now })
+            watermark.load({ watermark_txt: user + " " + now, watermark_alpha: 0.05})
         }
     };
 </script>

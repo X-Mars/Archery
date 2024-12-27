@@ -303,7 +303,9 @@ class TestAudit(TestCase):
         self.audit.workflow_type = WorkflowType.SQL_REVIEW
         self.audit.workflow_id = self.wf.id
         self.audit.save()
-        with self.assertRaisesMessage(Exception, "当前审批auth_group_id不存在，请检查并清洗历史数据"):
+        with self.assertRaisesMessage(
+            Exception, "当前审批auth_group_id不存在，请检查并清洗历史数据"
+        ):
             Audit.can_review(
                 self.user, self.audit.workflow_id, self.audit.workflow_type
             )
@@ -443,21 +445,6 @@ def test_generate_audit_setting_empty_config(sql_query_apply):
     assert "未配置审流" in str(e.value)
 
 
-def test_generate_audit_setting_auto_review(
-    sql_workflow, setup_sys_config, mocker: MockFixture
-):
-    sql_workflow, _ = sql_workflow
-    setup_sys_config.set("auto_review", True)
-
-    audit = AuditV2(workflow=sql_workflow, sys_config=setup_sys_config)
-    mock_is_auto_review = mocker.patch.object(
-        audit, "is_auto_review", return_value=True
-    )
-    audit_setting = audit.generate_audit_setting()
-    assert audit_setting.auto_pass is True
-    mock_is_auto_review.assert_called()
-
-
 def test_get_workflow(
     archive_apply,
     sql_query_apply,
@@ -523,6 +510,46 @@ def test_auto_review_not_applicable(
     assert audit.is_auto_review() is True
 
 
+@pytest.mark.parametrize(
+    "sql_command,expected_result",
+    [
+        ("DROP TABLE my_table;", False),
+        ("insert into my_table", True),
+        ("FLUSHDB", False),
+        ("FLUSHALL", False),
+        ("add key", True),
+    ],
+)
+def test_auto_review_with_default_regex(
+    db_instance,
+    sql_workflow,
+    instance_tag,
+    setup_sys_config,
+    sql_command,
+    expected_result,
+):
+    """
+    自动审核逻辑中，测试auto_review_regex未配置时使用默认正则表达式的情况。
+    """
+    sql_workflow, _ = sql_workflow
+    # 设置系统配置未包含 auto_review_regex，模拟未配置的环境
+    setup_sys_config.set("auto_review", True)
+    setup_sys_config.set("auto_review_db_type", "mysql")
+    setup_sys_config.set("auto_review_tag", instance_tag.tag_code)
+
+    db_instance.instance_tag.add(instance_tag)
+
+    # 创建 AuditV2 实例
+    audit = AuditV2(workflow=sql_workflow, sys_config=setup_sys_config)
+    # 设置审核内容SQL
+    audit.workflow.sqlworkflowcontent.sql_content = sql_command
+    audit.workflow.sqlworkflowcontent.review_content = json.dumps(
+        [{"sql": sql_command, "affected_rows": 0}]
+    )
+    # 执行自动审核逻辑
+    assert audit.is_auto_review() == expected_result
+
+
 def test_get_review_info(
     sql_query_apply,
     resource_group,
@@ -569,3 +596,41 @@ def test_get_review_info_auto_pass(
     response = admin_client.get(f"/queryapplydetail/{sql_query_apply.apply_id}/")
     assert response.status_code == 200
     assert "无需审批" in response.content.decode("utf-8")
+
+
+def test_auto_review_with_auto_reject(sql_workflow, mocker: MockFixture):
+    """自动审和不通过时无法自动审批"""
+    mocker.patch.object(AuditV2, "is_auto_reject").return_value = True
+    sql_workflow, _ = sql_workflow
+    audit = AuditV2(workflow=sql_workflow)
+    assert audit.is_auto_review() is False
+
+
+def test_auto_reject_non_sql_review(sql_query_apply):
+    """当前自动审核仅对 SQL 上线工单生效"""
+    audit = AuditV2(workflow=sql_query_apply)
+    assert audit.is_auto_reject() is False
+
+
+def test_auto_reject_not_applicable(sql_workflow, setup_sys_config):
+    """测试自动拒绝场景"""
+    sql_workflow, _ = sql_workflow
+    audit = AuditV2(workflow=sql_workflow, sys_config=setup_sys_config)
+    # warning_count > 0 and auto_review_wrong == "1",
+    audit.sys_config.set("auto_review_wrong", "1")
+    audit.workflow.sqlworkflowcontent.review_content = json.dumps([{"errlevel": 1}])
+    audit.workflow.sqlworkflowcontent.save()
+    assert audit.is_auto_reject() is True
+    # error_count > 0 and auto_review_wrong in ("", "1", "2")
+    audit.workflow.sqlworkflowcontent.review_content = json.dumps([{"errlevel": 2}])
+    audit.workflow.sqlworkflowcontent.save()
+    audit.sys_config.set("auto_review_wrong", "")
+    assert audit.is_auto_reject() is True
+    audit.sys_config.set("auto_review_wrong", "1")
+    assert audit.is_auto_reject() is True
+    audit.sys_config.set("auto_review_wrong", "2")
+    assert audit.is_auto_reject() is True
+    # warning_count=0 error_count=0
+    audit.workflow.sqlworkflowcontent.review_content = json.dumps([{"errlevel": 0}])
+    audit.workflow.sqlworkflowcontent.save()
+    assert audit.is_auto_reject() is False
