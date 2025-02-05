@@ -1,6 +1,6 @@
 import json
 from datetime import timedelta, datetime
-from unittest.mock import patch, Mock, ANY
+from unittest.mock import MagicMock, patch, Mock, ANY
 
 import sqlparse
 from django.contrib.auth import get_user_model
@@ -17,7 +17,7 @@ from sql.engines.oracle import OracleEngine
 from sql.engines.mongo import MongoEngine
 from sql.engines.clickhouse import ClickHouseEngine
 from sql.engines.odps import ODPSEngine
-from sql.models import Instance, SqlWorkflow, SqlWorkflowContent
+from sql.models import DataMaskingColumns, Instance, SqlWorkflow, SqlWorkflowContent
 
 User = get_user_model()
 
@@ -298,11 +298,132 @@ class TestRedis(TestCase):
         self.assertIsInstance(query_result, ResultSet)
         self.assertTupleEqual(query_result.rows, (["text"],))
 
+    @patch("redis.Redis.execute_command")
+    def test_query_with_dict_response(self, _execute_command):
+        # 定义 execute_command 的字典响应
+        dict_response = {
+            "key1": "value1",
+            "key2": {"subkey": "subvalue"},
+            "key3": ["listitem1", "listitem2"],
+        }
+        _execute_command.return_value = dict_response
+        new_engine = RedisEngine(instance=self.ins)
+        query_result = new_engine.query(db_name=0, sql="keys *", limit_num=100)
+
+        # 验证结果集
+        expected_rows = [
+            ["key1", "value1"],
+            ["key2", json.dumps({"subkey": "subvalue"})],
+            ["key3", json.dumps(["listitem1", "listitem2"])],
+        ]
+        self.assertIsInstance(query_result, ResultSet)
+        self.assertEqual(query_result.column_list, ["field", "value"])
+        self.assertEqual(query_result.rows, tuple(expected_rows))
+        self.assertEqual(query_result.affected_rows, len(expected_rows))
+
     @patch("redis.Redis.config_get", return_value={"databases": 4})
     def test_get_all_databases(self, _config_get):
         new_engine = RedisEngine(instance=self.ins)
         dbs = new_engine.get_all_databases()
         self.assertListEqual(dbs.rows, ["0", "1", "2", "3"])
+
+    @patch("redis.Redis.info")
+    @patch("redis.Redis.config_get")
+    def test_get_all_databases_exception_handling(self, mock_config_get, mock_info):
+        # 模拟config_get方法抛出异常
+        mock_config_get.side_effect = Exception("模拟config_get异常")
+        # 模拟info方法返回特定的Keyspace信息
+        mock_info.return_value = {
+            "db0": "some_info",
+            "db1": "some_info",
+            "db18": "some_info",
+        }
+        # 实例化RedisEngine并调用get_all_databases方法
+        new_engine = RedisEngine(instance=self.ins)
+        result = new_engine.get_all_databases()
+        # 验证返回的数据库列表是否符合预期.
+        expected_dbs = [str(x) for x in range(int(19))]
+        self.assertListEqual(result.rows, expected_dbs)
+        # 验证config_get方法被调用
+        mock_config_get.assert_called_once_with("databases")
+        # 验证info方法被调用
+        mock_info.assert_called_once_with("Keyspace")
+
+    @patch("redis.Redis.info")
+    @patch("redis.Redis.config_get")
+    def test_get_all_databases_with_empty_return_value(
+        self, mock_config_get, mock_info
+    ):
+        """
+        测试当Redis CONFIG GET命令因异常而失败，并且info命令返回空Keyspace信息时，
+        get_all_databases方法应正确处理并返回包含从0到15的数据库索引列表。
+        """
+        # 模拟config_get方法抛出异常
+        mock_config_get.side_effect = Exception("模拟config_get异常")
+        # 模拟info方法返回空的Keyspace信息
+        mock_info.return_value = {}
+        # 实例化RedisEngine并调用get_all_databases方法
+        new_engine = RedisEngine(instance=self.ins)
+        result = new_engine.get_all_databases()
+        # 验证返回的数据库列表，应该包括0到15，总共16个数据库
+        expected_dbs = [str(x) for x in range(16)]
+        self.assertListEqual(result.rows, expected_dbs)
+        # 验证config_get和info方法的调用
+        mock_config_get.assert_called_once_with("databases")
+        mock_info.assert_called_once_with("Keyspace")
+
+    @patch("redis.Redis.info")
+    @patch("redis.Redis.config_get")
+    def test_get_all_databases_with_less_than_15_dbs(self, mock_config_get, mock_info):
+        """
+        测试当Redis CONFIG GET命令因异常而失败，并且info命令返回的Keyspace信息
+        db num数据库值小于15时，get_all_databases方法应正确处理并返回包含从0到15的数据库索引列表。
+        """
+        # 模拟config_get方法抛出异常
+        mock_config_get.side_effect = Exception("模拟config_get异常")
+        # 模拟info方法返回小于15个数据库的Keyspace信息
+        mock_info.return_value = {
+            "db0": "some_info",
+            "db1": "some_info",
+            "db5": "some_info",
+            # 假设只有3个数据库
+        }
+        # 实例化RedisEngine并调用get_all_databases方法
+        new_engine = RedisEngine(instance=self.ins)
+        result = new_engine.get_all_databases()
+        # 验证返回的数据库列表，应该包括0到15，总共16个数据库
+        expected_dbs = [str(x) for x in range(16)]
+        self.assertListEqual(result.rows, expected_dbs)
+        # 验证config_get和info方法的调用
+        mock_config_get.assert_called_once_with("databases")
+        mock_info.assert_called_once_with("Keyspace")
+
+    @patch(
+        "redis.Redis.scan_iter", return_value=["table1", "table2", "table3", "table4"]
+    )
+    def test_get_all_tables_success(self, _scan_iter):
+        # 创建 RedisEngine 实例
+        new_engine = RedisEngine(instance=self.ins)
+
+        # 调用 get_all_tables 方法
+        db_name = "4"
+        result = new_engine.get_all_tables(db_name)
+        mask_result_rows = ["table1", "table2", "table3", "table4"]
+        # 验证返回的表格信息
+        self.assertEqual(result.rows, mask_result_rows)
+
+    @patch("redis.Redis.scan_iter", side_effect=Exception("Test Exception"))
+    def test_get_all_tables_exception(self, _scan_iter):
+        # 创建 RedisEngine 实例
+        new_engine = RedisEngine(instance=self.ins)
+
+        # 调用 get_all_tables 方法并模拟异常
+        db_name = "4"
+        result = new_engine.get_all_tables(db_name)
+
+        # 验证返回的异常信息
+        self.assertEqual(result.rows, [])
+        self.assertIn(result.message, "Test Exception")
 
     def test_query_check_safe_cmd(self):
         safe_cmd = "keys 1*"
@@ -352,7 +473,7 @@ class TestRedis(TestCase):
             id=1,
             errlevel=0,
             stagestatus="Audit completed",
-            errormessage="None",
+            errormessage="暂不支持显示影响行数",
             sql=sql,
             affected_rows=0,
             execute_time=0,
@@ -369,7 +490,7 @@ class TestRedis(TestCase):
             id=1,
             errlevel=0,
             stagestatus="Execute Successfully",
-            errormessage="None",
+            errormessage="暂不支持显示影响行数",
             sql=sql,
             affected_rows=0,
             execute_time=0,
@@ -392,6 +513,43 @@ class TestRedis(TestCase):
         execute_result = new_engine.execute_workflow(workflow=wf)
         self.assertIsInstance(execute_result, ReviewSet)
         self.assertEqual(execute_result.rows[0].__dict__.keys(), row.__dict__.keys())
+
+    @patch("sql.engines.redis.RedisEngine.get_connection")
+    def test_processlist(self, mock_get_connection):
+        """测试 processlist 方法，模拟获取连接并返回客户端列表"""
+
+        # 模拟 Redis 连接的客户端列表
+        mock_conn = Mock()
+
+        return_value_mock = [
+            {"id": "1", "idle": 10, "name": "client_1"},
+            {"id": "2", "idle": 5, "name": "client_2"},
+            {"id": "3", "idle": 20, "name": "client_3"},
+        ]
+        mock_conn.client_list.return_value = return_value_mock
+
+        # 设置 get_connection 返回模拟连接
+        mock_get_connection.return_value = mock_conn
+
+        # 创建 RedisEngine 实例
+        new_engine = RedisEngine(instance=self.ins)
+
+        # 调用 processlist 方法并测试其返回值
+        command_types = ["All"]  # 假设支持的命令类型
+        for command_type in command_types:
+            result_set = new_engine.processlist(command_type=command_type)
+
+            # 验证返回值是 ResultSet 实例
+            self.assertIsInstance(result_set, ResultSet)
+
+            # 验证返回的客户端列表被正确排序
+            sorted_clients = sorted(
+                return_value_mock, key=lambda client: client.get("idle"), reverse=False
+            )
+            self.assertEqual(result_set.rows, sorted_clients)
+
+        # 验证 get_connection 是否被调用
+        mock_get_connection.assert_called()
 
 
 class TestPgSQL(TestCase):
@@ -445,16 +603,46 @@ class TestPgSQL(TestCase):
     @patch("psycopg2.connect.cursor")
     @patch("psycopg2.connect")
     def test_query_not_limit(self, _conn, _cursor, _execute):
-        _conn.return_value.cursor.return_value.fetchall.return_value = [(1,)]
+        # 模拟数据库连接和游标
+        mock_cursor = MagicMock()
+        _conn.return_value.cursor.return_value = mock_cursor
+
+        # 模拟 SQL 查询的返回结果，包含 JSONB 类型、字符串和数字数据
+        mock_cursor.fetchall.return_value = [
+            ({"key": "value"}, "test_string", 123)  # 返回一行数据，三列
+        ]
+        mock_cursor.description = [
+            ("json_column", 3802),  # JSONB 类型
+            ("string_column", 25),  # 25 表示 TEXT 类型的 OID
+            ("number_column", 23),  # 23 表示 INTEGER 类型的 OID
+        ]
+
+        # _conn.return_value.cursor.return_value.fetchall.return_value = [(1,)]
         new_engine = PgSQLEngine(instance=self.ins)
         query_result = new_engine.query(
             db_name="some_dbname",
-            sql="select 1",
+            sql="SELECT json_column, string_column, number_column FROM some_table",
             limit_num=0,
             schema_name="some_schema",
         )
+
+        # 断言查询结果的类型和数据
         self.assertIsInstance(query_result, ResultSet)
-        self.assertListEqual(query_result.rows, [(1,)])
+        # 验证返回的 JSONB 列已转换为 JSON 字符串
+        expected_row = ('{"key": "value"}', "test_string", 123)
+        self.assertListEqual(query_result.rows, [expected_row])
+
+        expected_column = ["json_column", "string_column", "number_column"]
+        # 验证列名是否正确
+        self.assertEqual(query_result.column_list, expected_column)
+
+        # 验证受影响的行数
+        self.assertEqual(query_result.affected_rows, 1)
+
+        # 验证类型代码是否正确（3802 表示 JSONB，25 表示 TEXT，23 表示 INTEGER）
+        expected_column_type_codes = [3802, 25, 23]
+        actual_column_type_codes = [desc[1] for desc in mock_cursor.description]
+        self.assertListEqual(actual_column_type_codes, expected_column_type_codes)
 
     @patch(
         "sql.engines.pgsql.PgSQLEngine.query",
@@ -536,6 +724,20 @@ class TestPgSQL(TestCase):
                 "bad_query": False,
                 "filtered_sql": sql.strip(),
                 "has_star": True,
+            },
+        )
+
+    def test_query_check_explain(self):
+        sql = "explain select x from xx "
+        new_engine = PgSQLEngine(instance=self.ins)
+        check_result = new_engine.query_check(db_name="archery", sql=sql)
+        self.assertDictEqual(
+            check_result,
+            {
+                "msg": "",
+                "bad_query": False,
+                "filtered_sql": sql.strip(),
+                "has_star": False,
             },
         )
 
@@ -680,6 +882,40 @@ class TestPgSQL(TestCase):
             self.assertEqual(
                 execute_result.rows[0].__dict__.keys(), row.__dict__.keys()
             )
+
+    @patch("psycopg2.connect")
+    def test_processlist_not_idle(self, mock_connect):
+        # 模拟数据库连接和游标
+        mock_cursor = MagicMock()
+        mock_connect.return_value.cursor.return_value = mock_cursor
+
+        # 假设 query 方法返回的结果
+        mock_cursor.fetchall.return_value = [
+            (123, "test_db", "user", "app_name", "active")
+        ]
+
+        # 创建 PgSQLEngine 实例
+        new_engine = PgSQLEngine(instance=self.ins)
+
+        # 调用 processlist 方法
+        result = new_engine.processlist(command_type="Not Idle")
+        self.assertEqual(result.rows, mock_cursor.fetchall.return_value)
+
+    @patch("psycopg2.connect")
+    def test_processlist_idle(self, mock_connect):
+        # 模拟数据库连接和游标
+        mock_cursor = MagicMock()
+        mock_connect.return_value.cursor.return_value = mock_cursor
+
+        # 假设 query 方法返回的结果
+        mock_cursor.fetchall.return_value = [
+            (123, "test_db", "user", "app_name", "idle")
+        ]
+        # 创建 PgSQLEngine 实例
+        new_engine = PgSQLEngine(instance=self.ins)
+        # 调用 processlist 方法
+        result = new_engine.processlist(command_type="Idle")
+        self.assertEqual(result.rows, mock_cursor.fetchall.return_value)
 
 
 class TestModel(TestCase):
@@ -1130,42 +1366,6 @@ class TestOracle(TestCase):
             },
         )
 
-    def test_filter_sql_with_delimiter(self):
-        sql = "select * from xx;"
-        new_engine = OracleEngine(instance=self.ins)
-        check_result = new_engine.filter_sql(sql=sql, limit_num=100)
-        self.assertEqual(
-            check_result,
-            "select sql_audit.* from (select * from xx) sql_audit where rownum <= 100",
-        )
-
-    def test_filter_sql_with_delimiter_and_where(self):
-        sql = "select * from xx where id>1;"
-        new_engine = OracleEngine(instance=self.ins)
-        check_result = new_engine.filter_sql(sql=sql, limit_num=100)
-        self.assertEqual(
-            check_result,
-            "select sql_audit.* from (select * from xx where id>1) sql_audit where rownum <= 100",
-        )
-
-    def test_filter_sql_without_delimiter(self):
-        sql = "select * from xx;"
-        new_engine = OracleEngine(instance=self.ins)
-        check_result = new_engine.filter_sql(sql=sql, limit_num=100)
-        self.assertEqual(
-            check_result,
-            "select sql_audit.* from (select * from xx) sql_audit where rownum <= 100",
-        )
-
-    def test_filter_sql_with_limit(self):
-        sql = "select * from xx limit 10;"
-        new_engine = OracleEngine(instance=self.ins)
-        check_result = new_engine.filter_sql(sql=sql, limit_num=1)
-        self.assertEqual(
-            check_result,
-            "select sql_audit.* from (select * from xx limit 10) sql_audit where rownum <= 1",
-        )
-
     def test_query_masking(self):
         query_result = ResultSet()
         new_engine = OracleEngine(instance=self.ins)
@@ -1425,11 +1625,11 @@ end;"""
         self.assertIsInstance(execute_result, ResultSet)
 
     @patch("sql.engines.oracle.OracleEngine.query")
-    def test_session_list(self, _query):
+    def test_processlist(self, _query):
         new_engine = OracleEngine(instance=self.ins)
         _query.return_value = ResultSet()
         for command_type in ["All", "Active", "Others"]:
-            r = new_engine.session_list(command_type)
+            r = new_engine.processlist(command_type)
             self.assertIsInstance(r, ResultSet)
 
     @patch("sql.engines.oracle.OracleEngine.query")
@@ -1492,9 +1692,19 @@ class MongoTest(TestCase):
         )
         self.engine = MongoEngine(instance=self.ins)
         self.sys_config = SysConfig()
+        # rule_type=100的规则不需要加，会自动创建。只需要加脱敏字段
+        DataMaskingColumns.objects.create(
+            rule_type=100,
+            active=True,
+            instance=self.ins,
+            table_schema="*",
+            table_name="*",
+            column_name="mobile",
+        )
 
     def tearDown(self) -> None:
         self.ins.delete()
+        DataMaskingColumns.objects.all().delete()
 
     @patch("sql.engines.mongo.pymongo")
     def test_get_connection(self, mock_pymongo):
@@ -1731,21 +1941,30 @@ class MongoTest(TestCase):
         self.assertEqual(cols, ["_id", "title", "tags", "likes", "text", "author"])
 
     @patch("sql.engines.mongo.MongoEngine.get_connection")
-    def test_current_op(self, mock_get_connection):
-        class Aggregate:
+    def test_processlist(self, mock_get_connection):
+        # 模拟 MongoDB aggregate 的游标行为
+        class AggregateCursor:
             def __enter__(self):
-                yield {"client": "single_client"}
-                yield {"clientMetadata": {"mongos": {"client": "sharding_client"}}}
+                yield {
+                    "client": "single_client",
+                    "effectiveUsers": [{"user": "user_1"}],
+                    "clientMetadata": {"mongos": {"client": "sharding_client"}},
+                }
+                yield {
+                    "clientMetadata": {"mongos": {}},
+                    "effectiveUsers": [{"user": "user_2"}],
+                }
+                yield {"effectiveUsers": []}
 
-            def __exit__(self, *arg, **kwargs):
+            def __exit__(self, exc_type, exc_value, traceback):
                 pass
 
         mock_conn = Mock()
-        mock_conn.admin.aggregate.return_value = Aggregate()
+        mock_conn.admin.aggregate.return_value = AggregateCursor()
         mock_get_connection.return_value = mock_conn
         command_types = ["Full", "All", "Inner", "Active"]
         for command_type in command_types:
-            result_set = self.engine.current_op(command_type)
+            result_set = self.engine.processlist(command_type)
             self.assertIsInstance(result_set, ResultSet)
 
     @patch("sql.engines.mongo.MongoEngine.get_connection")
@@ -1859,6 +2078,27 @@ class MongoTest(TestCase):
                 }
             ],
         )
+
+    def test_query_masking(self):
+        query_result = ResultSet()
+        new_engine = MongoEngine(instance=self.ins)
+        query_result.column_list = ["id", "mobile"]
+        query_result.rows = (
+            ("a11", "18888888888"),
+            ("a12", ""),
+            ("a13", None),
+            ("a14", "18888888889"),
+        )
+        masking_result = new_engine.query_masking(
+            db_name="archery", sql="db.test_collection.find()", resultset=query_result
+        )
+        mask_result_rows = [
+            ["a11", "188****8888"],
+            ["a12", ""],
+            ["a13", None],
+            ["a14", "188****8889"],
+        ]
+        self.assertEqual(masking_result.rows, mask_result_rows)
 
 
 class TestClickHouse(TestCase):
@@ -2023,7 +2263,8 @@ class TestClickHouse(TestCase):
         select_sql = "select id,name from tb_test"
         check_result = new_engine.execute_check(db_name="some_db", sql=select_sql)
         self.assertEqual(
-            check_result.rows[0].errormessage, "仅支持DML和DDL语句，查询语句请使用SQL查询功能！"
+            check_result.rows[0].errormessage,
+            "仅支持DML和DDL语句，查询语句请使用SQL查询功能！",
         )
 
     @patch.object(ClickHouseEngine, "query")
@@ -2034,11 +2275,41 @@ class TestClickHouse(TestCase):
         mock_query.return_value = result
         new_engine = ClickHouseEngine(instance=self.ins1)
         table_engine = new_engine.get_table_engine(table_name)
-        alter_sql = "alter table default.tb_test add column remark String"
+        alter_sql = "alter table tb_test add column remark String"
         check_result = new_engine.execute_check(db_name="some_db", sql=alter_sql)
         self.assertEqual(
             check_result.rows[0].errormessage,
             "ALTER TABLE仅支持*MergeTree，Merge以及Distributed等引擎表！",
+        )
+
+    @patch.object(ClickHouseEngine, "query")
+    def test_execute_check_truncate_sql(self, mock_query):
+        table_name = "default.tb_test"
+        result = ResultSet()
+        result.rows = [("File",)]
+        mock_query.return_value = result
+        new_engine = ClickHouseEngine(instance=self.ins1)
+        table_engine = new_engine.get_table_engine(table_name)
+        alter_sql = "truncate table tb_test"
+        check_result = new_engine.execute_check(db_name="some_db", sql=alter_sql)
+        self.assertEqual(
+            check_result.rows[0].errormessage,
+            "TRUNCATE不支持View,File,URL,Buffer和Null表引擎！",
+        )
+
+    @patch.object(ClickHouseEngine, "query")
+    def test_execute_check_insert_sql(self, mock_query):
+        table_name = "default.tb_test"
+        result = ResultSet()
+        result.rows = [("Log",)]
+        mock_query.return_value = result
+        new_engine = ClickHouseEngine(instance=self.ins1)
+        table_engine = new_engine.get_table_engine(table_name)
+        alter_sql = "insert into tb_test(name) values('nick');"
+        check_result = new_engine.execute_check(db_name="some_db", sql=alter_sql)
+        self.assertEqual(
+            check_result.rows[0].errlevel,
+            0,
         )
 
     def test_filter_sql_with_delimiter(self):

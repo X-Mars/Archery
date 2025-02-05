@@ -309,13 +309,11 @@
                                        class="col-sm-4 control-label">BAN_SELF_AUDIT</label>
                                 <div class="col-sm-8">
                                     <div class="switch switch-small">
-                                        <label>
-                                            <input id="ban_self_audit"
-                                                   key="ban_self_audit"
-                                                   value="{{ config.ban_self_audit }}"
-                                                   type="checkbox" />
-                                            是否允许工单审批人与提出人相同
-                                        </label>
+                                        <input id="ban_self_audit"
+                                                  key="ban_self_audit"
+                                                  value="{{ config.ban_self_audit }}"
+                                                  type="checkbox" />
+                                        <label for="ban_self_audit" title="ON：禁止自审。OFF：允许自己审批自己的工单">禁止自审工单(管理员除外)</label>
                                     </div>
                                 </div>
                             </div>
@@ -934,6 +932,53 @@
                                 </div>
                             </div>
                         </div>
+                        
+                        <h4 style="color: darkgrey; display: inline;"><b>OPENAI 配置</b></h4>
+                        <h6 style="color:red">注1：若无OPENAI_API_KEY配置，则不开启相关功能</h6>
+                        <h6 style="color:red">注2：DEFAULT_CHAT_MODEL 默认配置为gpt-3.5-turbo，DEFAULT_QUERY_TEMPLATE 默认配置为系统定义的模板</h6>
+                        <hr/>
+                        <div class="form-horizontal">
+                            <div class="form-group">
+                                <label for="openai_base_url"
+                                       class="col-sm-4 control-label">OPENAI_BASE_URL</label>
+                                <div class="col-sm-5">
+                                    <input type="text" class="form-control" id="openai_base_url"
+                                           key="openai_base_url"
+                                           value="{{ config.openai_base_url }}"
+                                           placeholder="openai base url" />
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="openai_api_key"
+                                       class="col-sm-4 control-label">OPENAI_API_KEY</label>
+                                <div class="col-sm-5">
+                                    <input type="text" class="form-control" id="openai_api_key"
+                                           key="openai_api_key"
+                                           value="{{ config.openai_api_key }}"
+                                           placeholder="openai api key" />
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="default_chat_model"
+                                       class="col-sm-4 control-label">DEFAULT_CHAT_MODEL</label>
+                                <div class="col-sm-5">
+                                    <input type="text" class="form-control" id="default_chat_model"
+                                           key="default_chat_model"
+                                           value="{{ config.default_chat_model }}"
+                                           placeholder="openai default chat model" />
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="default_query_template"
+                                       class="col-sm-4 control-label">DEFAULT_QUERY_TEMPLATE</label>
+                                <div class="col-sm-5">
+                                    <input type="text" class="form-control" id="default_query_template"
+                                           key="default_query_template"
+                                           value="{{ config.default_query_template }}"
+                                           placeholder="默认生成SQL语句的Django模板, 无模板会导致生成结果失败, 需提供db_type/table_schema/user_input" />
+                                </div>
+                            </div>
+                        </div>
 
                         <h4 style="color: darkgrey"><b>其他配置</b></h4>
                         <hr/>
@@ -1074,6 +1119,42 @@
                                                    type="checkbox" /> 登录是否强制使用2FA
                                         </label>
                                     </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="announcement_content_enabled"
+                                       class="col-sm-4 control-label">ANNOUNCEMENT_CONTENT_ENABLED</label>
+                                <div class="col-sm-8">
+                                    <div class="switch switch-small">
+                                        <label>
+                                            <input id="announcement_content_enabled" key="announcement_content_enabled"
+                                                   value="{{ config.announcement_content_enabled }}"
+                                                   type="checkbox"> 是否开启公告
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="announcement_content"
+                                       class="col-sm-4 control-label">ANNOUNCEMENT_CONTENT</label>
+                                <div class="col-sm-5">
+                                    <input type="text" class="form-control"
+                                           id="announcement_content"
+                                           key="announcement_content"
+                                           value="{{ config.announcement_content }}"
+                                           placeholder="公告内容">
+                                            
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="custom_title_suffix"
+                                       class="col-sm-4 control-label">CUSTOM_TITLE_SUFFIX</label>
+                                <div class="col-sm-5">
+                                    <input type="text" class="form-control"
+                                           id="custom_title_suffix"
+                                           key="custom_title_suffix"
+                                           value="{{ config.custom_title_suffix }}"
+                                           placeholder="在网站标题及登录页面追加此内容, 可用于多archery实例的区分">
                                 </div>
                             </div>
                         </div>

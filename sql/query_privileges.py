@@ -79,9 +79,9 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
                 ):
                     # 没有库表查询权限时的staus为2
                     result["status"] = 2
-                    result[
-                        "msg"
-                    ] = f"你无{table['schema']}.{table['name']}表的查询权限！请先到查询权限管理进行申请"
+                    result["msg"] = (
+                        f"你无{table['schema']}.{table['name']}表的查询权限！请先到查询权限管理进行申请"
+                    )
                     return result
             # 获取查询涉及库/表权限的最小limit限制，和前端传参作对比，取最小值
             for table in table_ref:
@@ -98,8 +98,8 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
             result["msg"] = f"无法校验查询语句权限，请联系管理员，错误信息：{msg}"
     # 其他类型实例仅校验库权限
     else:
-        # 先获取查询语句涉及的库，redis、mssql特殊处理，仅校验当前选择的库
-        if instance.db_type in ["redis", "mssql"]:
+        # 先获取查询语句涉及的库，redis、mssql、pgsql特殊处理，仅校验当前选择的库
+        if instance.db_type in ["redis", "mssql", "pgsql"]:
             dbs = [db_name]
         else:
             dbs = [
@@ -117,7 +117,9 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
             if not _db_priv(user, instance, db_name):
                 # 没有库表查询权限时的staus为2
                 result["status"] = 2
-                result["msg"] = f"你无{db_name}数据库的查询权限！请先到查询权限管理进行申请"
+                result["msg"] = (
+                    f"你无{db_name}数据库的查询权限！请先到查询权限管理进行申请"
+                )
                 return result
         # 有所有库权限则获取最小limit值
         for db_name in dbs:
@@ -242,7 +244,9 @@ def query_priv_apply(request):
         for db_name in db_list:
             if _db_priv(user, ins, db_name):
                 result["status"] = 1
-                result["msg"] = f"你已拥有{instance_name}实例{db_name}库权限，不能重复申请"
+                result["msg"] = (
+                    f"你已拥有{instance_name}实例{db_name}库权限，不能重复申请"
+                )
                 return HttpResponse(json.dumps(result), content_type="application/json")
 
     # 表权限
@@ -250,13 +254,17 @@ def query_priv_apply(request):
         # 先检查是否拥有库权限
         if _db_priv(user, ins, db_name):
             result["status"] = 1
-            result["msg"] = f"你已拥有{instance_name}实例{db_name}库的全部权限，不能重复申请"
+            result["msg"] = (
+                f"你已拥有{instance_name}实例{db_name}库的全部权限，不能重复申请"
+            )
             return HttpResponse(json.dumps(result), content_type="application/json")
         # 检查申请账号是否已拥有该表的查询权限
         for tb_name in table_list:
             if _tb_priv(user, ins, db_name, tb_name):
                 result["status"] = 1
-                result["msg"] = f"你已拥有{instance_name}实例{db_name}.{tb_name}表的查询权限，不能重复申请"
+                result["msg"] = (
+                    f"你已拥有{instance_name}实例{db_name}.{tb_name}表的查询权限，不能重复申请"
+                )
                 return HttpResponse(json.dumps(result), content_type="application/json")
 
     apply_info = QueryPrivilegesApply(
@@ -417,7 +425,9 @@ def query_priv_audit(request):
     try:
         audit_status = WorkflowAction(int(request.POST["audit_status"]))
     except ValueError as e:
-        return render(request, "error.html", {"errMsg": f"audit_status 参数错误, {str(e)}"})
+        return render(
+            request, "error.html", {"errMsg": f"audit_status 参数错误, {str(e)}"}
+        )
     audit_remark = request.POST.get("audit_remark")
 
     if not audit_remark:
@@ -483,7 +493,7 @@ def _db_priv(user, instance, db_name):
     user_privileges = QueryPrivileges.objects.filter(
         user_name=user.username,
         instance=instance,
-        db_name=str(db_name),
+        db_name__in=[str(db_name), str("*")],
         valid_date__gte=datetime.datetime.now(),
         is_deleted=0,
         priv_type=1,
